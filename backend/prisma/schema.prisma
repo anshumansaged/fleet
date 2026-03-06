@@ -1,0 +1,310 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  owner
+  cashier
+}
+
+enum FuelType {
+  petrol
+  diesel
+  cng
+  electric
+  hybrid
+}
+
+enum Platform {
+  uber
+  indrive
+  yatri_sathi
+  rapido
+  offline
+}
+
+enum ExpenseType {
+  fuel
+  toll
+  repair
+  parking
+  challan
+  other
+}
+
+enum TripStatus {
+  draft
+  submitted
+  finalized
+}
+
+enum LedgerAccount {
+  cash
+  revenue
+  commission_expense
+  fuel_expense
+  other_expense
+  driver_salary
+  driver_salary_payable
+  cashier_cash
+  online_payment
+  owner_equity
+}
+
+enum LedgerType {
+  debit
+  credit
+}
+
+enum ReconciliationStatus {
+  pending
+  verified
+  flagged
+}
+
+// ─── Owner (Auth User) ──────────────────────────────────────
+model Owner {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  phone        String   @unique
+  password     String
+  businessName String?
+  role         Role     @default(owner)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  drivers         Driver[]
+  vehicles        Vehicle[]
+  trips           Trip[]
+  ledgerEntries   LedgerEntry[]
+  auditLogs       AuditLog[]       @relation("ownerAudits")
+  userAuditLogs   AuditLog[]       @relation("userAudits")
+  reconciliations Reconciliation[]
+
+  @@index([email])
+  @@index([phone])
+}
+
+// ─── Driver ─────────────────────────────────────────────────
+model Driver {
+  id                   String   @id @default(cuid())
+  ownerId              String
+  name                 String
+  phone                String
+  licenseNumber        String?
+  commissionPercentage Float    @default(30)
+  isActive             Boolean  @default(true)
+  joiningDate          DateTime @default(now())
+  pendingSalary        Float    @default(0)
+
+  // Bank details
+  bankAccountNumber String?
+  bankIfsc          String?
+  bankName          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner           Owner         @relation(fields: [ownerId], references: [id])
+  assignedVehicle Vehicle?      @relation("currentDriver")
+  trips           Trip[]
+  ledgerEntries   LedgerEntry[]
+
+  @@unique([ownerId, phone])
+  @@index([ownerId, isActive])
+}
+
+// ─── Vehicle ────────────────────────────────────────────────
+model Vehicle {
+  id                 String   @id @default(cuid())
+  ownerId            String
+  registrationNumber String
+  model              String?
+  year               Int?
+  fuelType           FuelType @default(cng)
+  currentDriverId    String?  @unique
+  currentOdometerKm  Float    @default(0)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  owner         Owner  @relation(fields: [ownerId], references: [id])
+  currentDriver Driver? @relation("currentDriver", fields: [currentDriverId], references: [id])
+  trips         Trip[]
+
+  @@unique([ownerId, registrationNumber])
+  @@index([ownerId, isActive])
+}
+
+// ─── Trip (main entity) ─────────────────────────────────────
+model Trip {
+  id      String   @id @default(cuid())
+  ownerId String
+  driverId String
+  vehicleId String
+  date     DateTime
+
+  startKm Float
+  endKm   Float
+
+  // Calculated fields
+  totalKm         Float @default(0)
+  totalEarnings   Float @default(0)
+  totalCommission Float @default(0)
+  netEarnings     Float @default(0)
+  totalExpenses   Float @default(0)
+  ownerProfit     Float @default(0)
+
+  status      TripStatus @default(draft)
+  finalizedAt DateTime?
+  finalizedBy String?
+  notes       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner    Owner   @relation(fields: [ownerId], references: [id])
+  driver   Driver  @relation(fields: [driverId], references: [id])
+  vehicle  Vehicle @relation(fields: [vehicleId], references: [id])
+
+  platformEarnings PlatformEarning[]
+  expenses         Expense[]
+  settlement       Settlement?
+  ledgerEntries    LedgerEntry[]
+
+  @@index([ownerId, date(sort: Desc)])
+  @@index([driverId, date(sort: Desc)])
+  @@index([vehicleId, date(sort: Desc)])
+  @@index([ownerId, status])
+  @@index([ownerId, driverId, date(sort: Desc)])
+}
+
+// ─── Platform Earnings (child of Trip) ──────────────────────
+model PlatformEarning {
+  id            String   @id @default(cuid())
+  tripId        String
+  platform      Platform
+  trips         Int      @default(0)
+  earning       Float
+  cashCollected Float    @default(0)
+  commission    Float    @default(0)
+
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  @@unique([tripId, platform])
+  @@index([tripId])
+}
+
+// ─── Expense (child of Trip) ────────────────────────────────
+model Expense {
+  id          String      @id @default(cuid())
+  tripId      String
+  type        ExpenseType
+  description String?
+  amount      Float
+
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  @@index([tripId])
+}
+
+// ─── Settlement (one per Trip) ──────────────────────────────
+model Settlement {
+  id                     String   @id @default(cuid())
+  tripId                 String   @unique
+  totalCashCollected     Float    @default(0)
+  totalExpenses          Float    @default(0)
+  onlinePayments         Float    @default(0)
+  cashInDriverHand       Float    @default(0)
+  driverSalaryAmount     Float    @default(0)
+  driverSalaryTaken      Boolean  @default(false)
+  driverSalaryTakenAmount Float   @default(0)
+  cashGivenToCashier     Float    @default(0)
+  remainingBalance       Float    @default(0)
+  settledAt              DateTime?
+  settledBy              String?
+
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+}
+
+// ─── Ledger Entry (immutable, double-entry) ─────────────────
+model LedgerEntry {
+  id            String        @id @default(cuid())
+  ownerId       String
+  tripId        String
+  driverId      String?
+  date          DateTime
+  account       LedgerAccount
+  type          LedgerType
+  amount        Float
+  description   String?
+  referenceType String?
+
+  createdAt DateTime @default(now())
+
+  owner  Owner  @relation(fields: [ownerId], references: [id])
+  trip   Trip   @relation(fields: [tripId], references: [id])
+  driver Driver? @relation(fields: [driverId], references: [id])
+
+  @@index([ownerId, date(sort: Desc)])
+  @@index([tripId])
+  @@index([ownerId, account, date(sort: Desc)])
+}
+
+// ─── Audit Log (immutable) ──────────────────────────────────
+model AuditLog {
+  id           String   @id @default(cuid())
+  ownerId      String
+  userId       String
+  action       String
+  entityType   String
+  entityId     String
+  previousData Json?
+  newData      Json?
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+
+  owner Owner @relation("ownerAudits", fields: [ownerId], references: [id])
+  user  Owner @relation("userAudits", fields: [userId], references: [id])
+
+  @@index([ownerId, createdAt(sort: Desc)])
+  @@index([entityType, entityId])
+}
+
+// ─── Reconciliation (daily snapshot) ────────────────────────
+model Reconciliation {
+  id                  String               @id @default(cuid())
+  ownerId             String
+  date                DateTime
+  totalTrips          Int                  @default(0)
+  totalEarnings       Float                @default(0)
+  totalCommissions    Float                @default(0)
+  totalExpenses       Float                @default(0)
+  totalDriverSalaries Float                @default(0)
+  totalCashCollected  Float                @default(0)
+  totalCashToCashier  Float                @default(0)
+  totalOnlinePayments Float                @default(0)
+  netProfit           Float                @default(0)
+  expectedCash        Float                @default(0)
+  actualCash          Float                @default(0)
+  discrepancy         Float                @default(0)
+  hasDiscrepancy      Boolean              @default(false)
+  tripIds             String[]
+  status              ReconciliationStatus @default(pending)
+  verifiedBy          String?
+  notes               String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  owner Owner @relation(fields: [ownerId], references: [id])
+
+  @@unique([ownerId, date])
+  @@index([ownerId, hasDiscrepancy])
+}
