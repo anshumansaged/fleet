@@ -18,10 +18,18 @@ const app = express();
 const httpServer = createServer(app);
 
 // Socket.IO for real-time updates
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5000',
+  /\.vercel\.app$/,
+  /\.onrender\.com$/,
+];
+
 const io = new Server(httpServer, {
   cors: {
-    origin: config.nodeEnv === 'development' ? '*' : undefined,
+    origin: config.nodeEnv === 'development' ? '*' : allowedOrigins,
     methods: ['GET', 'POST'],
+    credentials: true,
   },
 });
 
@@ -40,7 +48,10 @@ io.on('connection', (socket) => {
 
 // Middleware
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+}));
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan('short'));
 
@@ -56,17 +67,27 @@ app.use('/api/', limiter);
 // Routes
 app.use('/api', routes);
 
-// Serve React frontend in production
-if (config.nodeEnv === 'production') {
-  app.use(express.static(path.join(__dirname, '../../frontend/build')));
-  app.get('*', (_req, res) => {
-    res.sendFile(path.join(__dirname, '../../frontend/build/index.html'));
-  });
-}
-
 // Health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// API docs endpoint
+app.get('/', (_req, res) => {
+  res.json({
+    name: 'Fleet Accounting API',
+    version: '1.0.0',
+    status: 'running',
+    frontend: 'https://fleet-accounting.vercel.app',
+    docs: {
+      auth: '/api/auth/',
+      owners: '/api/owners/',
+      drivers: '/api/drivers/',
+      vehicles: '/api/vehicles/',
+      trips: '/api/trips/',
+      analytics: '/api/analytics/',
+    },
+  });
 });
 
 // Error handler
